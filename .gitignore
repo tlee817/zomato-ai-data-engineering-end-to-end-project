@@ -1,0 +1,21 @@
+# Local source data — 3 GB of CSVs and zips, not versioned
+data/
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# dbt (later phases)
+target/
+dbt_packages/
+logs/
