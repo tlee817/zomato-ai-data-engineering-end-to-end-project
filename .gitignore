@@ -6,6 +6,9 @@ data/
 .env.*
 !.env.example
 
+# Agent instructions (local only)
+CLAUDE.md
+
 # macOS
 .DS_Store
 
