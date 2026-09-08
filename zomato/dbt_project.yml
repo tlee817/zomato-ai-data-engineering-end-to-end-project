@@ -26,11 +26,16 @@ clean-targets:         # directories to be removed by `dbt clean`
 # Configuring models
 # Full documentation: https://docs.getdbt.com/docs/configuring-models
 
-# In this example config, we tell dbt to build all models in the example/
-# directory as views. These settings can be overridden in the individual model
-# files using the `{{ config(...) }}` macro.
+# Folder-level defaults. Individual models override these with {{ config(...) }} —
+# fct_orders and fct_order_items declare themselves incremental, which wins over
+# the +materialized: table below.
 models:
   zomato:
-    # Config indicated by + and applies to all files under models/example/
-    example:
-      +materialized: view
+    staging : { +materialized: view, +schema: staging}
+    marts : { +materialized: table, +schema: marts}
+
+# Snapshots are configured at the top level, not under `models:`. There is no
+# +materialized here — a snapshot is inherently one.
+snapshots:
+  zomato:
+    +schema: snapshots
