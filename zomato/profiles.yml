@@ -1,0 +1,35 @@
+# Connection profile for the `zomato` dbt project.
+#
+# Values come from environment variables so nothing sensitive is committed.
+# Copy ../.env.example to ../.env, fill it in, then load it before running dbt:
+#
+#     set -a && source ../.env && set +a
+#     dbt debug
+#
+# Snowflake objects referenced here are created by ../snowflake_scripts/01_setup.sql.
+
+zomato:
+  target: dev
+  outputs:
+    dev:
+      type: snowflake
+      account: "{{ env_var('SNOWFLAKE_ACCOUNT') }}"
+      user: "{{ env_var('SNOWFLAKE_USER') }}"
+
+      # Password auth. Snowflake now requires MFA for single-factor password
+      # sign-ins on newer accounts; if yours rejects this, switch to key-pair
+      # auth by replacing the line below with:
+      #   private_key_path: "{{ env_var('SNOWFLAKE_PRIVATE_KEY_PATH') }}"
+      #   private_key_passphrase: "{{ env_var('SNOWFLAKE_PRIVATE_KEY_PASSPHRASE') }}"
+      password: "{{ env_var('SNOWFLAKE_PASSWORD') }}"
+
+      role: "{{ env_var('SNOWFLAKE_ROLE', 'DBT_ROLE') }}"
+      warehouse: "{{ env_var('SNOWFLAKE_WAREHOUSE', 'ZOMATO_WH') }}"
+      database: "{{ env_var('SNOWFLAKE_DATABASE', 'ZOMATO') }}"
+
+      # Default landing schema. Models override this per-folder via +schema in
+      # dbt_project.yml, resolved verbatim by macros/generate_schema_name.sql.
+      schema: STAGING
+
+      threads: 4
+      client_session_keep_alive: false

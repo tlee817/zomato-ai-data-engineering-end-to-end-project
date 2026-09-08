@@ -1,0 +1,5 @@
+# Python 3.11. Install into a local venv:
+#     python3.11 -m venv .venv
+#     .venv/bin/pip install -r requirements.txt
+dbt-core~=1.12.0
+dbt-snowflake~=1.12.0

@@ -15,7 +15,8 @@ __pycache__/
 .venv/
 venv/
 
-# dbt (later phases)
+# dbt
 target/
 dbt_packages/
 logs/
+.user.yml
