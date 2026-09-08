@@ -1,105 +1,115 @@
-# Zomato AI Data Engineering — End-to-End Project
+# Zomato Data Platform
 
-An end-to-end analytics pipeline over a Zomato food-delivery dataset:
-**S3 → Snowflake → dbt → AI enrichment**, orchestrated with Airflow.
+Production-style analytics pipeline over a food-delivery dataset:
+**S3 → Snowflake → dbt**, with an LLM enrichment layer and Airflow orchestration in progress.
 
-Built incrementally, one phase per set of commits.
+**35.1M rows** loaded · **17 dbt models** · **16 data tests passing** · keyless AWS↔Snowflake auth
 
 ---
 
 ## Architecture
 
-Raw CSVs land in S3 and are loaded into Snowflake, which is organised as a medallion
-architecture inside a single `ZOMATO` database:
+```mermaid
+flowchart LR
+    CSV["Source CSVs<br/>~3 GB"] --> S3[("S3<br/>raw/ prefixes")]
+    S3 -->|"storage integration<br/>sts:AssumeRole"| RAW["Snowflake RAW<br/>35.1M rows"]
+    RAW -->|dbt| STG["Staging<br/>7 models"]
+    STG -->|dbt| MARTS["Marts<br/>4 dims · 2 facts · 4 aggregates"]
+    MARTS --> BI["Analytics / BI"]
+    RAW -.->|"OpenAI (in progress)"| AI["AI enrichment"]
+    AI -.-> MARTS
+```
 
-| Schema      | Purpose                                            |
-| ----------- | -------------------------------------------------- |
-| `BRONZE`    | Iceberg tables written by Spark (dbt sources)       |
-| `RAW`       | Direct `COPY INTO` landing zone from the S3 stage   |
-| `STAGING`   | Cleaned and conformed models (dbt)                  |
-| `MARTS`     | Gold-layer facts and dimensions (dbt)               |
-| `SNAPSHOTS` | SCD Type-2 history (dbt)                            |
-| `AI`        | LLM-enriched tables (review sentiment, topics)      |
+A medallion architecture inside one `ZOMATO` database:
 
-Snowflake reads S3 through a **storage integration** rather than access keys: Snowflake assumes
-a dedicated IAM role via `sts:AssumeRole` guarded by an external ID, so **no AWS credentials are
-ever stored in Snowflake**.
-
-Compute is a single `XSMALL` warehouse with 60-second auto-suspend, sized to keep trial credit
-burn low.
-
----
-
-## Project status
-
-- [x] **Phase 2 — Warehouse & S3 ingestion**: Snowflake warehouse, database, medallion schemas,
-      `DBT_ROLE`, S3 storage integration, external stage, RAW tables, and `COPY INTO` loads
-- [ ] Phase 3 — Spark / Iceberg bronze layer
-- [ ] Phase 4 — dbt staging, marts, snapshots, and tests
-- [ ] Phase 5 — AI enrichment over review text
-- [ ] Phase 6 — Airflow orchestration
-- [ ] Phase 7 — BI dashboard
+| Schema | Purpose |
+| --- | --- |
+| `RAW` | `COPY INTO` landing zone from the S3 external stage |
+| `STAGING` | Cleaned, typed, conformed models |
+| `MARTS` | Gold-layer dimensions, facts, and business aggregates |
+| `SNAPSHOTS` | SCD Type-2 history |
+| `AI` | LLM-enriched review sentiment and topics |
 
 ---
 
-## Phase 2 runbook
+## What this demonstrates
 
-Run the SQL in Snowsight as `ACCOUNTADMIN`, interleaved with the AWS console steps below.
-
-**1. Create Snowflake objects** — `snowflake_scripts/01_setup.sql`
-Creates warehouse `ZOMATO_WH`, database `ZOMATO`, the six schemas above, and `DBT_ROLE`
-with grants on the warehouse and database.
-
-**2. Create the S3 bucket and IAM role (AWS)**
-Create a bucket, then an IAM role named `snowflake-zomato-role` with:
-- Trust policy: `aws/iam/snowflake-role-trust-policy-initial.json` — a placeholder that trusts your
-  own account root, because the real Snowflake principal doesn't exist yet.
-- Permission policy: `aws/iam/s3-read-policy.json` — `GetObject`/`ListBucket` scoped to the bucket.
-
-**3. Create the storage integration** — `snowflake_scripts/02_storage_integration.sql`
-Fill in the role ARN and bucket, run `CREATE STORAGE INTEGRATION`, then run `DESC INTEGRATION`
-and copy two values out of the result: `STORAGE_AWS_IAM_USER_ARN` and `STORAGE_AWS_EXTERNAL_ID`.
-
-**4. Finalise the trust policy (AWS)**
-Replace the role's trust policy with `aws/iam/snowflake-role-trust-policy-final.json`, substituting
-the two values from step 3. This is what completes the handshake — Snowflake's IAM user becomes the
-trusted principal, and the external ID prevents the confused-deputy problem.
-
-**5. Create the stage and file format** — `snowflake_scripts/03_stage_and_formats.sql`
-Defines `CSV_FMT` (header skipped, quoted fields, lenient column counts) and the external stage
-pointing at `s3://<BUCKET>/raw/`. The closing `LIST` confirms Snowflake can see the files.
-
-**6. Upload the CSVs to S3**
-One file per prefix under `raw/`: `restaurants/`, `users/`, `food/`, `menu/`, `orders/`,
-`order_items/`, `reviews/`.
-
-**7. Create and load the RAW tables** — `snowflake_scripts/04_raw_tables.sql`, then
-`snowflake_scripts/05_copy_into.sql`
-The four dimension files are messy real-world exports, so they load as all-`STRING` columns with
-`ON_ERROR = 'CONTINUE'` to skip bad rows. The three generated fact files are clean and typed, so
-they load with `ON_ERROR = 'ABORT_STATEMENT'` to keep row counts exact. `05_copy_into.sql` ends
-with a row-count check across all seven tables.
+- **Keyless cloud auth.** Snowflake reaches S3 by assuming a dedicated IAM role guarded by an
+  external ID — no AWS access keys are stored in Snowflake or anywhere in this repo. The external
+  ID is what prevents the confused-deputy problem.
+- **Incremental modeling at scale.** `fct_orders` (10M rows) and `fct_order_items` (23M) use dbt
+  `incremental` materialization with `merge` strategy and `on_schema_change='append_new_columns'`,
+  so reruns process only new keys instead of rebuilding 33M rows.
+- **Defensive loading of messy data.** The four dimension exports land as all-`STRING` columns with
+  `ON_ERROR = 'CONTINUE'` to skip malformed rows; the clean generated fact files use
+  `ON_ERROR = 'ABORT_STATEMENT'` so row counts stay exact. Staging models then parse the mess —
+  `'--'` to null, `'50+ ratings'` to `50`, `'₹200'` to `200`, city extracted from free-text address.
+- **Tested transformations.** 16 dbt tests covering uniqueness, nullability, referential integrity
+  between facts and dimensions, and accepted values on categorical columns.
+- **Secrets discipline.** Every credential resolves through `env_var()` at runtime; the repo
+  contains only placeholders and a documented `.env.example`.
 
 ---
 
-## Configuration
+## Data model
 
-Every environment-specific value in the SQL and JSON is a placeholder — `<BUCKET>`, `<ROLE_ARN>`,
-`<ACCOUNT_ID>`, `<STORAGE_AWS_IAM_USER_ARN>`, `<STORAGE_AWS_EXTERNAL_ID>`. Substitute them locally.
-Real account IDs, ARNs, and credentials live in a local `.env`, which is gitignored and never
-committed.
+**Staging** (`models/staging/`) — one conformed view per source: `stg_orders`, `stg_order_items`,
+`stg_restaurants`, `stg_users`, `stg_food`, `stg_menus`, `stg_reviews`.
 
-## Data
+**Marts** (`models/marts/`)
 
-The source CSVs are not versioned here — `data/` is gitignored (roughly 3 GB). Download the dataset
-from the upstream project this build follows,
-[darshilparmar/zomato-ai-data-engineering-end-to-end-project](https://github.com/darshilparmar/zomato-ai-data-engineering-end-to-end-project),
-and unpack it into `data/` before running the S3 upload step.
+| Model | Grain |
+| --- | --- |
+| `fct_orders` | one row per order (10M, incremental) |
+| `fct_order_items` | one row per line item (23M, incremental) |
+| `dim_customers`, `dim_restaurants`, `dim_food`, `dim_date` | conformed dimensions |
+| `mart_daily_city_revenue` | GMV, AOV, cancel rate by day and city |
+| `mart_restaurant_performance` | per-restaurant volume and ratings |
+| `mart_delivery_sla` | delivery time against SLA |
+| `mart_review_insights` | sentiment rollup *(requires the AI layer)* |
 
-## Repository layout
+---
+
+## Stack
+
+Snowflake · dbt-core 1.12 · AWS S3 + IAM · Python 3.11 · Airflow *(in progress)* · OpenAI *(in progress)*
+
+---
+
+## Status
+
+- [x] Snowflake warehouse, medallion schemas, RBAC
+- [x] S3 storage integration and external stage
+- [x] RAW ingestion — 7 tables, 35.1M rows
+- [x] Staging layer — 7 models
+- [x] Marts layer — dimensions, incremental facts, business aggregates
+- [ ] AI enrichment over review text (`mart_review_insights` depends on this)
+- [ ] Airflow orchestration
+- [ ] BI dashboard
+
+---
+
+## Running it
+
+```bash
+python3.11 -m venv .venv && .venv/bin/pip install -r requirements.txt
+cp .env.example .env            # fill in Snowflake + AWS values
+set -a && source .env && set +a
+
+cd zomato
+../.venv/bin/dbt build          # run models + tests
+../.venv/bin/dbt docs generate && ../.venv/bin/dbt docs serve
+```
+
+Infrastructure setup — S3 bucket, IAM role, storage integration, and the `COPY INTO` loads — is
+documented step by step in **[docs/RUNBOOK.md](docs/RUNBOOK.md)**.
+
+Source CSVs are not versioned (`data/` is gitignored, ~3 GB). Dataset from
+[darshilparmar/zomato-ai-data-engineering-end-to-end-project](https://github.com/darshilparmar/zomato-ai-data-engineering-end-to-end-project).
 
 ```
-aws/iam/                 IAM permission and trust policies for the storage integration
-snowflake_scripts/       Phase 2 setup SQL, numbered in run order
-data/                    Local source CSVs (gitignored)
+aws/iam/             IAM trust + permission policies
+snowflake_scripts/   Warehouse, integration, and load SQL (numbered in run order)
+zomato/              dbt project
+docs/                Setup runbook
 ```

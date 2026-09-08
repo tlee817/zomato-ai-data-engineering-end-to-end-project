@@ -2,7 +2,7 @@
 -- Phase 2 · Step 2 — Secure S3 <-> Snowflake link (Storage Integration)
 -- This is the real-world way to connect (no keys stored in Snowflake).
 --
--- ORDER OF OPERATIONS (see README.md for the AWS clicks):
+-- ORDER OF OPERATIONS (see docs/RUNBOOK.md for the AWS clicks):
 --   A. In AWS IAM, create role `snowflake-zomato-role` with a PLACEHOLDER
 --      trust policy (trust your own account for now).
 --   B. Run CREATE STORAGE INTEGRATION below with that role's ARN.
